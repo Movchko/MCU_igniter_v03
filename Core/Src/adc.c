@@ -4,6 +4,13 @@
 /* Буфер DMA для трёх каналов АЦП */
 uint16_t MCU_IGN03_ADC_VAL[MCU_IGN03_NUM_ADC_CHANNEL];
 
+/* Последнее отфильтрованное значение ch2 (спичка) — для чтения из App_Timer1ms */
+static volatile uint16_t igniter_adc_filtered = 0;
+
+uint16_t ADC_GetIgniterFiltered(void) {
+	return igniter_adc_filtered;
+}
+
 /* Фильтрация по скользящему среднему (аналог PPKY) */
 static uint16_t adc_filter_val[MCU_IGN03_NUM_ADC_CHANNEL];
 static uint16_t adc_sma_buf[MCU_IGN03_NUM_ADC_CHANNEL][MCU_IGN03_FILTERSIZE];
@@ -42,13 +49,13 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 
     /* MCU_IGN03_ADC_VAL содержит три канала:
      * 0,1 – линия ДПТ (для VDeviceDPT)
-     * 2   – можно использовать для контроля воспламенителя (пока не задействуем)
+     * 2   – контроль -5В спички (через инвертер, 4.7кОм), значения в мВ
      */
     for (uint8_t i = 0; i < MCU_IGN03_NUM_ADC_CHANNEL; i++) {
         adc_filter_val[i] = SmaProcess(i, MCU_IGN03_ADC_VAL[i]);
     }
+    igniter_adc_filtered = adc_filter_val[2];
 
-    /* Виртуальному ДПТ передаём два первых отфильтрованных значения */
     App_SetDPTAdcValues(adc_filter_val[0], adc_filter_val[1]);
 }
 

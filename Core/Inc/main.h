@@ -60,6 +60,7 @@ void Error_Handler(void);
 
 extern ADC_HandleTypeDef hadc1;
 extern uint16_t MCU_IGN03_ADC_VAL[MCU_IGN03_NUM_ADC_CHANNEL];
+uint16_t ADC_GetIgniterFiltered(void);
 
 /* USER CODE END EFP */
 
