@@ -27,6 +27,11 @@ static MKUCfg g_saved_cfg;
 static VDeviceIgniter g_igniter(1);
 static VDeviceDPT    g_dpt(2);
 
+/* Планировщик запуска спичек по старту тушения:
+ * для каждого виртуального модуля i учитываем зону и модульную задержку. */
+static uint32_t g_extinguish_deadline_ms[NUM_DEV_IN_MCU];
+static uint8_t  g_extinguish_armed[NUM_DEV_IN_MCU];
+
 /* Кольцевой буфер принятых CAN-пакетов (как в MCU_TC) */
 #define APP_CAN_RX_RING_SIZE  64
 
@@ -46,6 +51,30 @@ volatile uint8_t CAN2_Active = 0;
 static uint32_t can1_last_rx_tick = 0;
 static uint32_t can2_last_rx_tick = 0;
 
+void RcvSetSystemTime(uint8_t *data) {}
+
+void RcvStatusFire() {}
+void RcvReplyStatusFire(){}
+void RcvStartExtinguishment() {
+	/* По команде "начать тушение" планируем запуск спичек
+	 * через zone_delay + module_delay[i] для каждого модуля. */
+	uint32_t now = HAL_GetTick();
+	for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
+		if (g_cfg.VDtype[i] != DEVICE_IGNITER_TYPE) {
+			continue;
+		}
+		uint32_t delay_ms = (g_cfg.zone_delay + g_cfg.module_delay[i])*1000;
+		g_extinguish_deadline_ms[i] = now + delay_ms;
+		g_extinguish_armed[i] = 1u;
+	}
+}
+void RcvStopExtinguishment() {
+	/* Сбросить все запланированные запуски спичек */
+	for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
+		g_extinguish_armed[i] = 0u;
+	}
+}
+
 /* callback статуса: отправляем его через CAN по протоколу backend */
 static void VDeviceSetStatus(uint8_t DNum, uint8_t Code, const uint8_t *Parameters)
 {
@@ -55,12 +84,6 @@ static void VDeviceSetStatus(uint8_t DNum, uint8_t Code, const uint8_t *Paramete
         data[i] = Parameters[i];
     }
     SendMessage(DNum, Code, data, 0, BUS_CAN12);
-}
-
-/* Заглушка сохранения конфига виртуальных устройств */
-static void SaveCfg(void)
-{
-    /* пока ничего не делаем, конфиг хранится в g_cfg */
 }
 
 
@@ -355,17 +378,26 @@ void App_Init(void)
     SetConfigPtr(reinterpret_cast<uint8_t *>(&g_saved_cfg),
                  reinterpret_cast<uint8_t *>(&g_cfg));
 
+    DeviceIgniterConfig *ign_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[0].reserv);
+    ign_cfg->disable_sc_check     = 1u;
+    ign_cfg->threshold_break_low  = 1000;
+    ign_cfg->threshold_break_high = 3000u;
+    ign_cfg->burn_retry_count     = 0u;
+
     /* Инициализируем виртуальный Igniter (Devices[0]) */
     g_igniter.DeviceInit(&g_cfg.Devices[0]);
     g_igniter.VDeviceSetStatus = VDeviceSetStatus;
-    g_igniter.VDeviceSaveCfg   = SaveCfg;
+    g_igniter.VDeviceSaveCfg   = SaveConfig;
     g_igniter.Init();
 
 
     /* Инициализируем виртуальный ДПТ (Devices[1]) */
     g_dpt.DeviceInit(&g_cfg.Devices[1]);
     g_dpt.VDeviceSetStatus = VDeviceSetStatus;
-    g_dpt.VDeviceSaveCfg   = SaveCfg;
+    g_dpt.VDeviceSaveCfg   = SaveConfig;
+
+
+
     g_dpt.Init();
 
     /* Регистрируем устройства в backend:
@@ -432,6 +464,20 @@ void App_Timer1ms(void)
     } else {
         led_cnt = 0u;
         HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+    }
+
+    /* Планировщик запуска спичек по команде StartExtinguishment */
+    uint32_t now = HAL_GetTick();
+    for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
+        if (g_extinguish_armed[i]) {
+            /* используем арифметику со знаком для корректной работы при переполнении Tick */
+            if ((int32_t)(now - g_extinguish_deadline_ms[i]) >= 0) {
+                g_extinguish_armed[i] = 0u;
+                /* пока одна спичка: запускаем игнитер командой 0 */
+                uint8_t params[7] = {0,0,0,0,0,0,0};
+                g_igniter.CommandCB(0, params);
+            }
+        }
     }
 
     /* Обновляем флаги активности CAN: если 2 секунды тишина — считаем шину неактивной */
