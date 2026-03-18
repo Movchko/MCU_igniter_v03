@@ -475,7 +475,7 @@ void App_Timer1ms(void)
                 g_extinguish_armed[i] = 0u;
                 /* пока одна спичка: запускаем игнитер командой 0 */
                 uint8_t params[7] = {0,0,0,0,0,0,0};
-                g_igniter.CommandCB(0, params);
+                g_igniter.CommandCB(10, params);
             }
         }
     }
