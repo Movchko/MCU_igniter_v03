@@ -55,15 +55,16 @@ void RcvSetSystemTime(uint8_t *data) {}
 
 void RcvStatusFire() {}
 void RcvReplyStatusFire(){}
-void RcvStartExtinguishment() {
-	/* По команде "начать тушение" планируем запуск спичек
-	 * через zone_delay + module_delay[i] для каждого модуля. */
+extern "C" void RcvStartExtinguishment(uint8_t *MsgData) {
+	/* ППКУ: data[0..2] после команды = zone, zone_delay_s, module_delay_s */
+	uint8_t zd = MsgData[1];
+	uint8_t md = MsgData[2];
+	uint32_t delay_ms = ((uint32_t)zd + (uint32_t)md) * 1000u;
 	uint32_t now = HAL_GetTick();
 	for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
 		if (g_cfg.VDtype[i] != DEVICE_IGNITER_TYPE) {
 			continue;
 		}
-		uint32_t delay_ms = (g_cfg.zone_delay + g_cfg.module_delay[i])*1000;
 		g_extinguish_deadline_ms[i] = now + delay_ms;
 		g_extinguish_armed[i] = 1u;
 	}
@@ -133,6 +134,11 @@ void DefaultConfig(void)
     /* VDtype: Devices[0]=Igniter, Devices[1]=DPT */
     g_cfg.VDtype[0] = DEVICE_IGNITER_TYPE;
     g_cfg.VDtype[1] = 0;//DEVICE_DPT_TYPE;
+
+    g_cfg.zone_delay = 5 + g_cfg.UId.devId.zone * 2;
+    g_cfg.module_delay[0] = 0;
+    g_cfg.module_delay[1] = 2;
+    g_cfg.module_delay[2] = 3;
 
     /* Igniter config в Devices[0].reserv */
     DeviceIgniterConfig *ign_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[0].reserv);
@@ -378,11 +384,18 @@ void App_Init(void)
     SetConfigPtr(reinterpret_cast<uint8_t *>(&g_saved_cfg),
                  reinterpret_cast<uint8_t *>(&g_cfg));
 
+    //TODO:: delete
     DeviceIgniterConfig *ign_cfg = reinterpret_cast<DeviceIgniterConfig*>(g_cfg.Devices[0].reserv);
     ign_cfg->disable_sc_check     = 1u;
     ign_cfg->threshold_break_low  = 1000;
     ign_cfg->threshold_break_high = 3000u;
     ign_cfg->burn_retry_count     = 0u;
+    g_cfg.UId.devId.zone = 1; // <<<<<<<<<<<
+    g_cfg.zone_delay = 5 + g_cfg.UId.devId.zone * 2;
+    g_cfg.module_delay[0] = 0;
+    g_cfg.module_delay[1] = 2;
+    g_cfg.module_delay[2] = 4;
+
 
     /* Инициализируем виртуальный Igniter (Devices[0]) */
     g_igniter.DeviceInit(&g_cfg.Devices[0]);
@@ -397,8 +410,9 @@ void App_Init(void)
     g_dpt.VDeviceSaveCfg   = SaveConfig;
 
 
-
     g_dpt.Init();
+
+
 
     /* Регистрируем устройства в backend:
      * Dev 0 – физическая плата (тип DEVICE_MCU_IGN_TYPE)
