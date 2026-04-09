@@ -50,16 +50,41 @@ volatile uint8_t CAN1_Active = 0;
 volatile uint8_t CAN2_Active = 0;
 static uint32_t can1_last_rx_tick = 0;
 static uint32_t can2_last_rx_tick = 0;
-
+static uint8_t is_start_extinguish = 0;
 void RcvSetSystemTime(uint8_t *data) {}
 
-void RcvStatusFire() {}
-void RcvReplyStatusFire(){}
-extern "C" void RcvStartExtinguishment(uint8_t *MsgData) {
+static uint8_t zone_delay = 0;
+static uint8_t module_delay = 0;
+
+
+
+
+extern "C" void RcvStartExtinguishment(uint32_t MsgID,  uint8_t *MsgData, uint8_t is_mine) {
+	//extern Device BoardDevicesList[];
+	//can_ext_id_t can_id;
+	//can_id.ID = 0;
+	//can_id.ID = MsgID;
+
+	if(is_mine == 0) return;
+
+
 	/* ППКУ: data[0..2] после команды = zone, zone_delay_s, module_delay_s */
-	uint8_t zd = MsgData[1];
-	uint8_t md = MsgData[2];
-	uint32_t delay_ms = ((uint32_t)zd + (uint32_t)md) * 1000u;
+	uint8_t zone = MsgData[0];
+	if(zone && (zone != g_cfg.UId.devId.zone)) // если не наша зона и не широковещаьтельная (зона = 0)
+		return;
+
+	// TODO
+
+	if(is_start_extinguish) { // защита, если уже был пуск, задержки не могут увеличиться от прошлого пуска. только уменьшиться
+		if(MsgData[1] >= zone_delay)
+			return;
+		if(MsgData[2] >= module_delay)
+			return;
+	}
+
+	zone_delay = MsgData[1];
+	module_delay = MsgData[2];
+	uint32_t delay_ms = ((uint32_t)zone_delay + (uint32_t)module_delay) * 1000u;
 	uint32_t now = HAL_GetTick();
 	for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
 		if (g_cfg.VDtype[i] != DEVICE_IGNITER_TYPE) {
@@ -67,6 +92,7 @@ extern "C" void RcvStartExtinguishment(uint8_t *MsgData) {
 		}
 		g_extinguish_deadline_ms[i] = now + delay_ms;
 		g_extinguish_armed[i] = 1u;
+		is_start_extinguish++;
 	}
 }
 void RcvStopExtinguishment() {
@@ -74,6 +100,7 @@ void RcvStopExtinguishment() {
 	for (uint8_t i = 0; i < NUM_DEV_IN_MCU; i++) {
 		g_extinguish_armed[i] = 0u;
 	}
+	is_start_extinguish = 0;
 }
 
 /* callback статуса: отправляем его через CAN по протоколу backend */
@@ -300,11 +327,20 @@ uint32_t GetID(void)
     return (id0 ^ id1 ^ id2);
 }
 
+void MCU_IgnCommandCB(uint8_t Command, uint8_t *Parameters) {
+	if(Command == 20) {
+		g_cfg.UId.devId.zone = Parameters[0];
+		SaveConfig();
+	}
+}
+
+
 void CommandCB(uint8_t Dev, uint8_t Command, uint8_t *Parameters)
 {
     switch (Dev) {
     case 0:
-        /* сервисные команды физической платы – пока заглушка */
+        /* сервисные команды физической платы */
+    	MCU_IgnCommandCB(Command, Parameters);
         break;
     case 1:
         /* команды для Igniter */
@@ -390,7 +426,7 @@ void App_Init(void)
     ign_cfg->threshold_break_low  = 1000;
     ign_cfg->threshold_break_high = 3000u;
     ign_cfg->burn_retry_count     = 0u;
-    g_cfg.UId.devId.zone = 1; // <<<<<<<<<<<
+    //g_cfg.UId.devId.zone = 1; // <<<<<<<<<<<
     g_cfg.zone_delay = 5 + g_cfg.UId.devId.zone * 2;
     g_cfg.module_delay[0] = 0;
     g_cfg.module_delay[1] = 2;
@@ -421,9 +457,7 @@ void App_Init(void)
      */
     nDevs = 1; /* Dev 0 – плата */
 
-    if (nDevs <= 0) {
-        nDevs = 1;
-    }
+
     BoardDevicesList[0].zone  = g_cfg.UId.devId.zone;
     BoardDevicesList[0].h_adr = g_cfg.UId.devId.h_adr;
     BoardDevicesList[0].l_adr = g_cfg.UId.devId.l_adr;
@@ -490,6 +524,7 @@ void App_Timer1ms(void)
                 /* пока одна спичка: запускаем игнитер командой 0 */
                 uint8_t params[7] = {0,0,0,0,0,0,0};
                 g_igniter.CommandCB(10, params);
+                is_start_extinguish--;
             }
         }
     }
